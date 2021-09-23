@@ -1,0 +1,272 @@
+# This template will:
+    #     Create a VPC with:
+    #     2 Public Subnets
+    #     An Internet Gateway (with routes to it for Public Subnets)
+    #     Subnet Association
+    #     EC2 Security Group
+    #     ALB Security Group
+    #     2 - t2.micro instances Apache running on Port 80 using userdata function
+    #     Target Group (2 targets i.e instances registered)
+    #     Application Load balancer in front of 2 instances
+    #     Use service URL generated on Output to test the application
+Parameters:
+  Name:
+    Type: String
+
+  SSHKeyName:
+    Description: 'Name of the ec2 key you need one to use this template'
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Default: 'choose-key'
+
+  VpcCIDR:
+    Type: String
+
+  Subnet1CIDR:
+    Type: String
+
+  Subnet2CIDR:
+    Type: String
+
+
+Resources:
+  #Creates VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      Tags:
+        - Key: Name
+          Value: !Ref Name
+
+  #Creates Internet Gateway for this VPC
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref Name
+
+  #Connects IG to created VPC
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  #Creates Public Subnet 1
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Ref Subnet1CIDR
+      Tags:
+        - Key: Name
+          Value: !Sub ${Name} (Public)
+
+  #Creates Public Subnet 2
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      MapPublicIpOnLaunch: true
+      CidrBlock: !Ref Subnet2CIDR
+      Tags:
+        - Key: Name
+          Value: !Sub ${Name} (Public)
+
+  #Creates Route table for created VPC
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Ref Name
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  #Associates Route table to Subnet 1
+  Subnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet1
+
+  #Associates Route table to Subnet 2
+  Subnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet2
+
+  # EC2 Security Group Allowing Port 22 and 80 from anywhere
+  EC2SecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+          GroupDescription: 'SSH and Port 80'
+          VpcId:
+            Ref: VPC
+          SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 22
+                ToPort: 22
+                CidrIp: 0.0.0.0/0
+              - IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                SourceSecurityGroupId:
+                    Ref: ELBSecurityGroup
+
+  # ELB Security Group allowing Port 80 from anywhere (Loadbalancer SG)
+  ELBSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+          GroupDescription: 'SSH and Port 80'
+          VpcId:
+            Ref: VPC
+          SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                CidrIp: 0.0.0.0/0
+
+
+  # 1st Linux Instance with Apache running on Port 80
+  AmazonLinuxInstanceone:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: "ami-087c17d1fe0178315"
+      InstanceInitiatedShutdownBehavior: stop
+      InstanceType: t2.micro
+      KeyName:
+        Ref: SSHKeyName
+      Monitoring: 'true'
+      NetworkInterfaces:
+       - AssociatePublicIpAddress: 'true'
+         DeviceIndex: '0'
+         GroupSet:
+         - !Ref EC2SecurityGroup
+         SubnetId: !Ref Subnet1
+      Tenancy: default
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash 
+          yum update -y
+          sudo yum install -y httpd
+          sudo systemctl start httpd.service
+          sudo systemctl enable httpd.service
+          echo "Hello world from $(hostname -f)" > /var/www/html/index.html
+
+
+  #2nd Linux Instance with Apache running on Port 80
+  AmazonLinuxInstancetwo:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: "ami-087c17d1fe0178315"
+      InstanceInitiatedShutdownBehavior: stop
+      InstanceType: t2.micro
+      KeyName:
+        Ref: SSHKeyName
+      Monitoring: 'true'
+      NetworkInterfaces:
+       - AssociatePublicIpAddress: 'true'
+         DeviceIndex: '0'
+         GroupSet:
+         - !Ref EC2SecurityGroup
+         SubnetId: !Ref Subnet2
+      Tenancy: default
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash 
+          yum update -y
+          sudo yum install -y httpd
+          sudo systemctl start httpd.service
+          sudo systemctl enable httpd.service
+          echo "Hello world from $(hostname -f)" > /var/www/html/index.html
+  
+  # Target Group
+  EC2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      Matcher:
+        HttpCode: '200'
+      Name: EC2TargetGroup
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '20'
+      TargetType: instance
+      Targets:
+        - Id: !Ref AmazonLinuxInstanceone
+          Port: 80
+        - Id: !Ref AmazonLinuxInstancetwo
+          Port: 80
+      UnhealthyThresholdCount: 3
+      VpcId:
+        Ref: 'VPC'
+      Tags:
+      - Key: Name
+        Value: EC2TargetGroup
+      - Key: Port
+        Value: 80
+
+  #Listner
+  Listener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: '80'
+      Protocol: HTTP
+
+  #Application Load balancer 
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Ref Name
+      Subnets:
+        - !Ref Subnet1
+        - !Ref Subnet2
+      SecurityGroups:
+        - !Ref ELBSecurityGroup
+
+
+Outputs:
+  Subnet1:
+    Value: !Ref Subnet1
+  Subnet2:
+    Value: !Ref Subnet2
+  VpcId:
+    Value: !Ref VPC
+  ServiceUrl:
+    Description: URL of the load balancer for the sample service.
+    Value: !Sub http://${LoadBalancer.DNSName}
+  LoadBalancerArn:
+    Value: !Ref LoadBalancer
+  EC2Instance:
+    Description: 'EC2 Instance'
+    Value: 
+      Ref: AmazonLinuxInstanceone
+      Ref: AmazonLinuxInstancetwo
+  EC2TargetGroup:
+    Description: 'EC2 Target Group'
+    Value:
+      Ref: EC2TargetGroup
+  ListenerArn:
+    Value: !Ref Listener
